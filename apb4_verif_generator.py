@@ -1,15 +1,12 @@
 from typing import List, Dict
 import pandas as pd
 from reg_model_generator import RegModelGenerator, AccessType, SecurityType, RegModel, RegField
-from pathlib import Path
-import os
 
 class APB4VerifGenerator:
-    def __init__(self, excel_file: Path, uvm_home: Path):
+    def __init__(self, excel_file: str):
         self.reg_model_gen = RegModelGenerator(excel_file)
-        self.uvm_home = uvm_home
         
-    def generate_interface(self, output_path: Path):
+    def generate_interface(self, output_path: str):
         """生成APB4接口定义"""
         interface_code = """
 interface apb4_if (input bit pclk);
@@ -48,10 +45,10 @@ interface apb4_if (input bit pclk);
     modport monitor (clocking monitor_cb);
 endinterface
 """
-        with open(output_path, 'w', encoding='utf-8') as f:
+        with open(output_path, 'w') as f:
             f.write(interface_code)
             
-    def generate_transaction(self, output_path: Path):
+    def generate_transaction(self, output_path: str):
         """生成APB4事务类"""
         trans_code = """
 class apb4_trans extends uvm_sequence_item;
@@ -91,10 +88,10 @@ class apb4_trans extends uvm_sequence_item;
     endfunction
 endclass
 """
-        with open(output_path, 'w', encoding='utf-8') as f:
+        with open(output_path, 'w') as f:
             f.write(trans_code)
             
-    def generate_driver(self, output_path: Path):
+    def generate_driver(self, output_path: str):
         """生成APB4驱动器"""
         driver_code = """
 class apb4_driver extends uvm_driver #(apb4_trans);
@@ -157,10 +154,10 @@ class apb4_driver extends uvm_driver #(apb4_trans);
     endtask
 endclass
 """
-        with open(output_path, 'w', encoding='utf-8') as f:
+        with open(output_path, 'w') as f:
             f.write(driver_code)
             
-    def generate_monitor(self, output_path: Path):
+    def generate_monitor(self, output_path: str):
         """生成APB4监视器"""
         monitor_code = """
 class apb4_monitor extends uvm_monitor;
@@ -206,10 +203,10 @@ class apb4_monitor extends uvm_monitor;
     endtask
 endclass
 """
-        with open(output_path, 'w', encoding='utf-8') as f:
+        with open(output_path, 'w') as f:
             f.write(monitor_code)
             
-    def generate_agent(self, output_path: Path):
+    def generate_agent(self, output_path: str):
         """生成APB4代理"""
         agent_code = """
 class apb4_agent extends uvm_agent;
@@ -241,10 +238,10 @@ class apb4_agent extends uvm_agent;
     endfunction
 endclass
 """
-        with open(output_path, 'w', encoding='utf-8') as f:
+        with open(output_path, 'w') as f:
             f.write(agent_code)
             
-    def generate_sequences(self, output_path: Path):
+    def generate_sequences(self, output_path: str):
         """生成APB4序列"""
         if not self.reg_model_gen.reg_models:
             self.reg_model_gen.load_excel()
@@ -299,36 +296,109 @@ class apb4_reg_sequence extends apb4_base_sequence;
                     
         seq_code.append("    endtask\nendclass")
         
-        with open(output_path, 'w', encoding='utf-8') as f:
+        with open(output_path, 'w') as f:
             f.write('\n'.join(seq_code))
             
-    def generate_reg_model(self, output_path: Path):
+    def generate_reg_model(self, output_path: str):
         """生成寄存器模型"""
+        if not self.reg_model_gen.reg_models:
+            self.reg_model_gen.load_excel()
+            
         reg_code = ["""
-    // 寄存器字段定义
-    class reg_fields extends uvm_reg;"""]
-        
-        # 为每个字段生成UVM字段定义
+package reg_model_pkg;
+    import uvm_pkg::*;
+    `include "uvm_macros.svh"
+    
+    // 寄存器基地址
+    parameter REG_BASE_ADDR = 32'h0000_0000;
+"""]
+
+        # 生成每个寄存器的地址参数
+        addr_offset = 0
+        for reg_name in self.reg_model_gen.reg_models:
+            reg_code.append(f"    parameter {reg_name}_ADDR = REG_BASE_ADDR + 'h{addr_offset:03X};")
+            addr_offset += 4
+            
+        # 为每个寄存器生成寄存器类
         for reg_name, reg_model in self.reg_model_gen.reg_models.items():
+            reg_code.extend([
+                f"\n    // {reg_name} 寄存器类",
+                f"    class {reg_name}_reg extends uvm_reg;",
+                f"        `uvm_object_utils({reg_name}_reg)\n"
+            ])
+            
+            # 生成字段定义
             for field_name, field in reg_model.fields.items():
+                reg_code.append(f"        rand uvm_reg_field {field_name};  // {field.description}")
+                
+            # 生成构造函数
+            reg_code.extend([
+                f"\n        function new(string name = \"{reg_name}_reg\");",
+                f"            super.new(name, {reg_model.width}, UVM_NO_COVERAGE);",
+                f"        endfunction\n"
+            ])
+            
+            # 生成build函数
+            reg_code.append("        virtual function void build();")
+            
+            # 配置每个字段
+            for field_name, field in reg_model.fields.items():
+                config = self.reg_model_gen.get_field_config(field)
                 reg_code.extend([
-                    f"    // {field_name} 字段",
-                    f"    rand uvm_reg_field {reg_name.lower()}_{field_name};",
-                    f"    // 配置字段属性",
-                    f"    {reg_name.lower()}_{field_name}.configure(this, {field.width}, {field.offset}, ",
-                    f"        \"{field.access_type}\", 0, {field.reset_value}, 1, 1, 1);"
+                    f"            {field_name} = uvm_reg_field::type_id::create(\"{field_name}\");",
+                    f"            {field_name}.configure(this, {field.width}, {field.offset}, ",
+                    f"                \"{field.access_type}\", {1 if field.security == SecurityType.NS.value else 0}, ",
+                    f"                {config['has_reset']}, {config['is_volatile']}, {config['is_rand']}, 0);"
                 ])
-        
+                
+            reg_code.append("        endfunction")
+            reg_code.append("    endclass\n")
+            
         # 生成寄存器块类
         reg_code.extend([
-            "endclass",
+            "    // 寄存器块类",
+            "    class reg_block extends uvm_reg_block;",
+            "        `uvm_object_utils(reg_block)\n",
+            "        // 寄存器实例"
+        ])
+        
+        # 声明寄存器实例
+        for reg_name in self.reg_model_gen.reg_models:
+            reg_code.append(f"        rand {reg_name}_reg {reg_name.lower()};")
+            
+        # 生成构造函数和build函数
+        reg_code.extend([
+            "\n        function new(string name = \"reg_block\");",
+            "            super.new(name, UVM_NO_COVERAGE);",
+            "        endfunction\n",
+            "        virtual function void build();",
+            "            // 创建默认映射",
+            "            default_map = create_map(\"default_map\", 0, 4, UVM_LITTLE_ENDIAN);\n"
+        ])
+        
+        # 创建和配置每个寄存器
+        addr_offset = 0
+        for reg_name in self.reg_model_gen.reg_models:
+            reg_code.extend([
+                f"            // 创建{reg_name}寄存器",
+                f"            {reg_name.lower()} = {reg_name}_reg::type_id::create(\"{reg_name.lower()}\");",
+                f"            {reg_name.lower()}.configure(this);",
+                f"            {reg_name.lower()}.build();",
+                f"            default_map.add_reg({reg_name.lower()}, 'h{addr_offset:X});\n"
+            ])
+            addr_offset += 4
+            
+        reg_code.extend([
+            "        endfunction",
+            "    endclass",
             "endpackage"
         ])
         
-        with open(output_path, 'w', encoding='utf-8') as f:
+        # 写入文件
+        with open(output_path, 'w') as f:
             f.write('\n'.join(reg_code))
 
-    def generate_adapter(self, output_path: Path):
+    def generate_adapter(self, output_path: str):
         """生成APB4适配器"""
         adapter_code = """
 class apb4_adapter extends uvm_reg_adapter;
@@ -453,216 +523,41 @@ class apb4_adapter extends uvm_reg_adapter;
     endfunction
 endclass
 """
-        with open(output_path, 'w', encoding='utf-8') as f:
+        with open(output_path, 'w') as f:
             f.write(adapter_code)
 
-    def generate_env(self, output_path: Path):
-        """生成 env.sv 文件"""
-        env_code = """
-`include "uvm_macros.svh"
-import uvm_pkg::*;
-import apb4_pkg::*;
-import reg_model_pkg::*;
-
-class apb4_env extends uvm_env;
-    `uvm_component_utils(apb4_env)
-
-    // 组件声明
-    apb4_agent       agent;
-    reg_model        reg_model;
-    apb4_adapter     adapter;
-    uvm_reg_predictor#(apb4_trans) predictor;
-    apb4_scoreboard  scoreboard;
-    apb4_coverage    coverage;
-
-    function new(string name, uvm_component parent);
-        super.new(name, parent);
-    endfunction
-
-    virtual function void build_phase(uvm_phase phase);
-        super.build_phase(phase);
-
-        // 创建组件
-        agent = apb4_agent::type_id::create("agent", this);
-        reg_model = reg_model::type_id::create("reg_model", this);
-        adapter = apb4_adapter::type_id::create("adapter", this);
-        predictor = uvm_reg_predictor#(apb4_trans)::type_id::create("predictor", this);
-        scoreboard = apb4_scoreboard::type_id::create("scoreboard", this);
-        coverage = apb4_coverage::type_id::create("coverage", this);
-
-        // 配置寄存器模型
-        reg_model.configure(null, "");
-        reg_model.build();
-        reg_model.lock_model();
-    endfunction
-
-    virtual function void connect_phase(uvm_phase phase);
-        super.connect_phase(phase);
-
-        // 连接寄存器模型和预测器
-        predictor.map = reg_model.default_map;
-        predictor.adapter = adapter;
-
-        // 连接 agent 和预测器
-        agent.monitor.ap.connect(predictor.bus_in);
-
-        // 连接 agent 和 scoreboard
-        agent.monitor.ap.connect(scoreboard.analysis_export);
-
-        // 连接 agent 和 coverage
-        agent.monitor.ap.connect(coverage.analysis_export);
-    endfunction
-endclass
+    def generate_verif_env(self, output_dir: str):
+        """生成完整的验证环境"""
+        import os
+        if not os.path.exists(output_dir):
+            os.makedirs(output_dir)
+            
+        # 生成寄存器模型
+        self.generate_reg_model(f"{output_dir}/reg_model_pkg.sv")
+            
+        # 生成其他组件
+        self.generate_interface(f"{output_dir}/apb4_if.sv")
+        self.generate_adapter(f"{output_dir}/apb4_adapter.sv")
+        self.generate_transaction(f"{output_dir}/apb4_trans.sv")
+        self.generate_driver(f"{output_dir}/apb4_driver.sv")
+        self.generate_monitor(f"{output_dir}/apb4_monitor.sv")
+        self.generate_agent(f"{output_dir}/apb4_agent.sv")
+        self.generate_sequences(f"{output_dir}/apb4_sequences.sv")
+        
+        # 生成包文件
+        pkg_code = """
+package apb4_verif_pkg;
+    import uvm_pkg::*;
+    import reg_model_pkg::*;
+    `include "uvm_macros.svh"
+    
+    `include "apb4_adapter.sv"
+    `include "apb4_trans.sv"
+    `include "apb4_driver.sv"
+    `include "apb4_monitor.sv"
+    `include "apb4_agent.sv"
+    `include "apb4_sequences.sv"
+endpackage
 """
-        with open(output_path, 'w', encoding='utf-8') as f:
-            f.write(env_code)
-
-    def generate_verif_env(self, config):
-        """生成验证环境的逻辑"""
-        print("生成验证环境...")
-        
-        # 生成 tb_top.sv 文件
-        self.generate_tb_top(config.env_dir / "tb_top.sv")
-        
-        # 生成 tb.sv 文件
-        self.generate_tb(config.env_dir / "tb.sv")
-        
-        # 生成 env.sv 文件
-        self.generate_env(config.env_dir / "apb4_env.sv")
-        
-        print("验证环境生成完成")
-
-    def generate_tb_top(self, output_path: Path):
-        """生成 tb_top.sv 文件"""
-        tb_top_code = """
-module tb_top;
-    // 信号定义
-    reg clk;
-    reg reset;
-
-    // 实例化 DUT
-    apb4_reg_block dut (
-        .pclk(clk),
-        .presetn(reset)
-    );
-
-    initial begin
-        // 初始化信号
-        clk = 0;
-        reset = 1;
-        #10 reset = 0;
-        // 其他测试逻辑
-    end
-
-    always #5 clk = ~clk;  // 生成时钟信号
-endmodule
-"""
-        with open(output_path, 'w', encoding='utf-8') as f:
-            f.write(tb_top_code)
-
-    def generate_tb(self, output_path: Path):
-        """生成 tb.sv 文件"""
-        tb_code = """
-module tb;
-    // 信号定义
-    reg clk;
-    reg reset;
-
-    // 实例化 DUT
-    apb4_reg_block dut (
-        .pclk(clk),
-        .presetn(reset)
-    );
-
-    // 实例化 apb_env
-    apb4_env env;
-
-    initial begin
-        // 初始化信号
-        clk = 0;
-        reset = 1;
-        #10 reset = 0;
-
-        // 创建并启动测试
-        env = apb4_env::type_id::create("env", null);
-        env.build();
-        env.connect();
-        env.start();
-    end
-
-    always #5 clk = ~clk;  // 生成时钟信号
-endmodule
-"""
-        with open(output_path, 'w', encoding='utf-8') as f:
-            f.write(tb_code)
-
-    def generate_tb_filelist(self, output_path: Path):
-        """生成TB文件列表"""
-        filelist = [
-            "// UVM库路径",
-            f"+incdir+{self.uvm_home}/src",  # 使用 UVM_HOME 环境变量
-            f"{self.uvm_home}/src/uvm.sv"  # 使用 UVM_HOME 环境变量
-        ]
-        
-        # 检查 UVM 库路径
-        if (self.uvm_home / "src/uvm.sv").exists():
-            filelist.append(f"+incdir+{self.uvm_home}/src")  # 使用 UVM_HOME 环境变量
-            filelist.append(f"{self.uvm_home}/src/uvm.sv")   # 使用 UVM_HOME 环境变量
-        else:
-            print(f"警告: 找不到 UVM 库文件: {self.uvm_home}/src/uvm.sv")
-            print("将使用 NO_DPI 模式编译")
-            filelist.append("+define+UVM_NO_DPI")  # 添加 NO_DPI 定义
-
-        filelist.extend([
-            "",
-            "// 寄存器模型",
-            "${TEST}/tb/uvc/reg_model/reg_model_pkg.sv",
-            "",
-            "// APB4 UVC",
-            "${TEST}/tb/uvc/apb4/apb4_pkg.sv",
-            "${TEST}/tb/uvc/apb4/apb4_if.sv",
-            "${TEST}/tb/uvc/apb4/apb4_types.sv",
-            "${TEST}/tb/uvc/apb4/apb4_config.sv",
-            "${TEST}/tb/uvc/apb4/apb4_driver.sv",
-            "${TEST}/tb/uvc/apb4/apb4_monitor.sv",
-            "${TEST}/tb/uvc/apb4/apb4_sequencer.sv",
-            "${TEST}/tb/uvc/apb4/apb4_agent.sv",
-            "",
-            "// 验证环境",
-            "${TEST}/tb/env/apb4_env.sv",
-            "${TEST}/tb/env/test_top.sv",
-            "${TEST}/tb/env/tb.sv",
-            "",
-            "// 测试用例",
-            "${TEST}/tb/benchmark/sequence/apb4_base_sequence.sv",
-            "${TEST}/tb/benchmark/sequence/apb4_reg_sequences.sv",
-            "${TEST}/tb/benchmark/testcase/apb4_base_test.sv",
-            "${TEST}/tb/benchmark/testcase/apb4_reg_tests.sv",
-            "${TEST}/tb/benchmark/tc_include_lib/apb4_test_pkg.sv"
-        ])
-        
-        # 确保父目录存在
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        
-        with open(output_path, 'w', encoding='utf-8') as f:
-            f.write('\n'.join(filelist))
-
-    def generate_apb4_components(self, output_dir: Path):
-        """生成APB4相关组件"""
-        if not output_dir.exists():
-            output_dir.mkdir(parents=True)
-
-        # 生成APB4相关文件
-        files = [
-            "apb4_if.sv",
-            "apb4_trans.sv",
-            "apb4_driver.sv",
-            "apb4_monitor.sv",
-            "apb4_agent.sv"
-        ]
-
-        for file in files:
-            file_path = output_dir / file
-            with open(file_path, 'w', encoding='utf-8') as f:
-                f.write(f"// {file} 文件内容\n")
-                # 这里可以添加具体的文件内容生成逻辑 
+        with open(f"{output_dir}/apb4_verif_pkg.sv", 'w') as f:
+            f.write(pkg_code) 

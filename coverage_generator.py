@@ -1,6 +1,5 @@
 from typing import List, Dict
 import pandas as pd
-from pathlib import Path
 
 class CoverageGenerator:
     def __init__(self, reg_model):
@@ -14,8 +13,8 @@ class CoverageGenerator:
         return f"""
             // {field_name} 字段覆盖点
             {field_name}_cp: coverpoint {field_name}.value {{
-                bins valid_values[] = {{[0:{'{'}{(1 << width)-1}{'}'}}};
-                bins transitions[] = ([0:{'{'}{(1 << width)-1}{'}'} => 0:{'{'}{(1 << width)-1}{'}'}]);
+                bins valid_values[] = {{[0:{(1 << width)-1]}};
+                bins transitions[] = ([0:{(1 << width)-1]} => [0:{(1 << width)-1}]);
                 option.at_least = 1;
             }}"""
     
@@ -144,21 +143,4 @@ class CoverageGenerator:
         
         # 写入文件
         with open(output_path, 'w') as f:
-            f.write('\n'.join(output_code))
-
-    def generate_coverage(self, output_path: Path):
-        """生成覆盖率收集代码"""
-        cov_code = ["""
-        // 字段覆盖率组
-        covergroup field_cg;"""]
-        
-        # 为每个字段生成覆盖点
-        for reg_name, reg_model in self.reg_model_gen.reg_models.items():
-            for field_name, field in reg_model.fields.items():
-                cov_code.extend([
-                    f"        // {field_name} 覆盖点",
-                    f"        {reg_name.lower()}_{field_name}_cp: coverpoint " +
-                    f"reg_model.{reg_name.lower()}_{field_name}.value {{",
-                    f"            bins valid_values[] = {{[0:{(1 << field.width)-1}]}};",
-                    f"        }}"
-                ]) 
+            f.write('\n'.join(output_code)) 

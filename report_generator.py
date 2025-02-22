@@ -7,10 +7,9 @@ from docx.shared import Inches, Pt, RGBColor
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml.ns import qn
 from reg_model_generator import RegModelGenerator, AccessType, SecurityType, RegModel, RegField
-from pathlib import Path
 
 class ReportGenerator:
-    def __init__(self, excel_file: Path):
+    def __init__(self, excel_file: str):
         self.reg_model_gen = RegModelGenerator(excel_file)
         self.excel_file = excel_file
         self.report_time = datetime.datetime.now()
@@ -52,44 +51,50 @@ class ReportGenerator:
         self.add_heading("寄存器概要", 1)
         self.add_heading("寄存器列表", 2)
         
-        # 创建寄存器列表表格
+        reg_groups = self.reg_model_gen.reg_models.groupby('RegisterName')
         headers = ['寄存器名称', '地址偏移', '总位宽', '字段数量', '描述']
         rows = []
         
-        # 遍历字典而不是使用groupby
-        for reg_name, reg_model in self.reg_model_gen.reg_models.items():
+        addr_offset = 0
+        for reg_name, fields in reg_groups:
+            total_width = sum(fields['Width'])
+            field_count = len(fields)
+            descriptions = '; '.join(fields['Description'])
             rows.append([
                 reg_name,
-                f"0x{reg_model.offset:X}",
-                str(reg_model.width),
-                str(len(reg_model.fields)),
-                reg_model.description
+                f"0x{addr_offset:03X}",
+                str(total_width),
+                str(field_count),
+                descriptions
             ])
-        
+            addr_offset += 4
+            
         self.add_table(headers, rows)
         self.doc.add_paragraph()
         
     def generate_field_details(self):
         """生成字段详细信息"""
         self.add_heading("寄存器详细信息", 1)
+        reg_groups = self.reg_model_gen.reg_models.groupby('RegisterName')
         
         headers = ['字段名称', '位宽', '偏移', '访问类型', '复位值', '安全属性', '描述']
         
-        # 直接遍历字典而不是使用groupby
-        for reg_name, reg_model in self.reg_model_gen.reg_models.items():
+        for reg_name, fields in reg_groups:
             self.add_heading(f"{reg_name} 寄存器", 2)
             
             rows = []
-            for field_name, field in reg_model.fields.items():
+            offset = 0
+            for _, field in fields.iterrows():
                 rows.append([
-                    field_name,
-                    str(field.width),
-                    str(field.offset),
-                    field.access_type,
-                    f"0x{field.reset_value:X}",
-                    '非安全' if field.security == 'NS' else '安全',
-                    field.description
+                    field['Filed'],
+                    str(field['Width']),
+                    str(offset),
+                    field['RW-op'],
+                    str(field['Reset_value']),
+                    '非安全' if field['NON-SECURE'] else '安全',
+                    field['Description']
                 ])
+                offset += field['Width']
                 
             self.add_table(headers, rows)
             self.doc.add_paragraph()
@@ -97,19 +102,19 @@ class ReportGenerator:
     def generate_coverage_summary(self):
         """生成覆盖率信息概要"""
         self.add_heading("覆盖率收集计划", 1)
+        reg_groups = self.reg_model_gen.reg_models.groupby('RegisterName')
         
         # 字段覆盖率
         self.add_heading("字段覆盖率", 2)
         headers = ['寄存器', '字段', '覆盖类型']
         rows = []
         
-        # 直接遍历字典而不是使用groupby
-        for reg_name, reg_model in self.reg_model_gen.reg_models.items():
-            for field_name, field in reg_model.fields.items():
-                if field.access_type == 'RW':
+        for reg_name, fields in reg_groups:
+            for _, field in fields.iterrows():
+                if field['RW-op'] == 'RW':
                     rows.append([
                         reg_name,
-                        field_name,
+                        field['Filed'],
                         '值覆盖, 转换覆盖'
                     ])
                     
@@ -121,10 +126,8 @@ class ReportGenerator:
         headers = ['寄存器', '交叉字段']
         rows = []
         
-        # 直接遍历字典而不是使用groupby
-        for reg_name, reg_model in self.reg_model_gen.reg_models.items():
-            rw_fields = [name for name, field in reg_model.fields.items() 
-                        if field.access_type == 'RW']
+        for reg_name, fields in reg_groups:
+            rw_fields = fields[fields['RW-op'] == 'RW']['Filed'].tolist()
             if len(rw_fields) > 1:
                 rows.append([reg_name, ' × '.join(rw_fields)])
                 

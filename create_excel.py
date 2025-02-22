@@ -5,13 +5,11 @@ import openpyxl
 from openpyxl.styles import PatternFill, Font, Alignment, Border, Side, Protection
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.datavalidation import DataValidation
-from pathlib import Path
 
 class ExcelGenerator:
     def __init__(self):
         self.columns = [
             'RegisterName',
-            'Offset',
             'Filed',
             'Width',
             'RW-op',
@@ -23,7 +21,6 @@ class ExcelGenerator:
         # 列宽设置
         self.column_widths = {
             'RegisterName': 15,
-            'Offset': 10,
             'Filed': 15,
             'Width': 8,
             'RW-op': 12,  # 增加宽度以适应更长的访问类型
@@ -98,9 +95,9 @@ class ExcelGenerator:
         help_sheet[f'A{row}'] = "STATUS.irq"
         help_sheet[f'B{row}'] = "W1C类型，表示写1清零的中断状态位"
         
-    def format_excel(self, file_path: Path):
+    def format_excel(self, file_path: str):
         """格式化Excel文件并添加数据验证"""
-        wb = openpyxl.load_workbook(str(file_path))
+        wb = openpyxl.load_workbook(file_path)
         ws = wb.active
         
         # 设置表头样式
@@ -151,10 +148,14 @@ class ExcelGenerator:
         # 添加帮助说明页
         self.add_help_sheet(wb)
         
-        # 保存文件
-        wb.save(str(file_path))
+        # 保护工作表
+        ws.protection.sheet = True
+        ws.protection.enable()
         
-    def create_template(self, output_path: Path):
+        # 保存文件
+        wb.save(file_path)
+        
+    def create_template(self, output_path: str):
         """创建示例Excel模板"""
         # 创建示例数据
         data = {
@@ -163,12 +164,6 @@ class ExcelGenerator:
                 'STATUS',   'STATUS',   'STATUS',    # 状态寄存器
                 'DATA',     'DATA',                  # 数据寄存器
                 'VERSION',  'VERSION'                # 版本寄存器
-            ],
-            'Offset': [
-                '0x00',    '0x00',    '0x00',      # CTRL偏移
-                '0x04',    '0x04',    '0x04',      # STATUS偏移
-                '0x08',    '0x08',                 # DATA偏移
-                '0x0C',    '0x0C'                  # VERSION偏移
             ],
             'Filed': [
                 'enable',   'mode',     'irq_en',    # CTRL字段
@@ -212,7 +207,7 @@ class ExcelGenerator:
         df = pd.DataFrame(data)
         
         # 保存到Excel文件
-        df.to_excel(str(output_path), index=False)
+        df.to_excel(output_path, index=False)
         
         # 格式化Excel文件
         self.format_excel(output_path)
@@ -249,9 +244,9 @@ class ExcelGenerator:
                 
         return errors
         
-    def read_excel(self, file_path: Path) -> pd.DataFrame:
+    def read_excel(self, file_path: str) -> pd.DataFrame:
         """读取并验证Excel文件"""
-        df = pd.read_excel(str(file_path), usecols=self.columns)
+        df = pd.read_excel(file_path, usecols=self.columns)
         
         # 验证数据有效性
         errors = self.validate_excel(df)

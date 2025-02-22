@@ -1,6 +1,5 @@
 from typing import List, Dict
 import pandas as pd
-import os
 
 class APB4TestGenerator:
     def __init__(self, reg_model):

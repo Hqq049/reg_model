@@ -2,7 +2,6 @@ import pandas as pd
 from typing import List, Dict, Optional
 from create_excel import ExcelGenerator
 from enum import Enum, auto
-from pathlib import Path
 
 class AccessType(Enum):
     """寄存器访问类型"""
@@ -67,7 +66,7 @@ class RegModel:
         self.name = name
         self.fields: Dict[str, RegField] = {}
         self.width = 0
-        self.offset = int(fields['Offset'].iloc[0].replace('0x', ''), 16)  # 从Excel读取偏移地址
+        self.offset = 0
         
         # 创建字段
         current_offset = 0
@@ -104,9 +103,10 @@ class RegModel:
 
 class RegModelGenerator:
     """寄存器模型生成器"""
-    def __init__(self, excel_file: Path):
+    def __init__(self, excel_file: str):
         self.excel_file = excel_file
-        self.reg_models = None  # 存储寄存器模型
+        self.reg_data = None
+        self.reg_models: Dict[str, RegModel] = {}
         self.base_address = 0x0
         self.address_width = 32
         self.data_width = 32
@@ -127,9 +127,6 @@ class RegModelGenerator:
             self.reg_models[reg_name] = reg_model
             offset += 4  # 每个寄存器4字节对齐
             
-        # 不需要转换为DataFrame
-        # self.reg_models = pd.DataFrame.from_dict(self.reg_models, orient='index')
-        
     def get_field_config(self, field: RegField) -> Dict[str, int]:
         """获取字段配置参数"""
         configs = {
@@ -148,18 +145,113 @@ class RegModelGenerator:
         }
         return configs.get(field.access_type, configs[AccessType.RW.value])
     
-    def generate_reg_model(self, output_path: Path):
+    def generate_reg_model(self, output_path: str):
         """生成寄存器模型代码"""
-        if self.reg_models is None:
-            self.load_excel()  # 从 Excel 加载寄存器模型
+        if self.reg_data is None:
+            self.load_excel()
+            
+        # 按寄存器名称分组
+        reg_groups = self.reg_data.groupby('RegisterName')
         
-        output_code = []
-        for reg_name, reg_model in self.reg_models.items():
-            reg_code = f"class {reg_name} extends uvm_reg;\n"
-            # 生成寄存器字段和其他逻辑
+        # 生成寄存器包
+        output_code = ["""
+        package reg_model_pkg;
+            import uvm_pkg::*;
+            `include "uvm_macros.svh"
+            
+            // 寄存器基地址
+            parameter REG_BASE_ADDR = 32'h0000_0000;
+        """]
+        
+        # 生成每个寄存器的地址参数
+        addr_offset = 0
+        for reg_name in reg_groups.groups.keys():
+            output_code.append(f"    parameter {reg_name}_ADDR = REG_BASE_ADDR + 'h{addr_offset:03X};")
+            addr_offset += 4
+        
+        # 生成每个寄存器类
+        for reg_name, fields in reg_groups:
+            # 计算字段偏移
+            field_offsets = self.calculate_field_offset(fields)
+            
+            # 生成字段定义
+            field_definitions = []
+            field_builds = []
+            
+            for _, field in fields.iterrows():
+                # 生成rand变量定义
+                field_definitions.append(f"rand uvm_reg_field {field['Filed']};")
+                
+                # 生成build函数中的字段配置
+                config = self.get_field_config(field)
+                field_builds.append(f"""
+                    {field['Filed']} = uvm_reg_field::type_id::create("{field['Filed']}");
+                    {field['Filed']}.configure(this, {field['Width']}, {field_offsets[field['Filed']]}, 
+                        "{field['RW-op']}", {self.convert_security_to_nonsecure(field['Security'])}, 
+                        {config['has_reset']}, {config['is_volatile']}, {config['is_rand']}, 0);
+                """)
+            
+            # 使用模板生成寄存器类
+            reg_code = f"""
+            class {reg_name}_reg extends uvm_reg;
+                `uvm_object_utils({reg_name}_reg)
+                
+                // 字段定义
+                {'\n    '.join(field_definitions)}
+                
+                function new(string name = "{reg_name}_reg");
+                    super.new(name, {self.data_width}, UVM_NO_COVERAGE);
+                endfunction
+                
+                virtual function void build();
+                    {'\n        '.join(field_builds)}
+                endfunction
+                
+                // 添加寄存器描述
+                `uvm_register_description("{'; '.join(fields['Description'])}")
+            endclass
+            """
             output_code.append(reg_code)
         
-        with open(output_path, 'w', encoding='utf-8') as f:
+        # 生成寄存器块类
+        output_code.append("""
+            class reg_block extends uvm_reg_block;
+                `uvm_object_utils(reg_block)
+                
+                // 寄存器实例定义
+        """)
+        
+        # 添加寄存器实例
+        for reg_name in reg_groups.groups.keys():
+            output_code.append(f"    {reg_name}_reg {reg_name.lower()};")
+        
+        # 添加build函数
+        build_code = ["""
+                function new(string name = "reg_block");
+                    super.new(name, UVM_NO_COVERAGE);
+                endfunction
+                
+                virtual function void build();
+        """]
+        
+        # 创建和配置每个寄存器
+        addr_offset = 0
+        for reg_name in reg_groups.groups.keys():
+            build_code.extend([
+                f"            {reg_name.lower()} = {reg_name}_reg::type_id::create(\"{reg_name.lower()}\");",
+                f"            {reg_name.lower()}.configure(this);",
+                f"            {reg_name.lower()}.build();",
+                f"            default_map.add_reg({reg_name.lower()}, 'h{addr_offset:03X});"
+            ])
+            addr_offset += 4
+        
+        build_code.append("        endfunction")
+        output_code.extend(build_code)
+        output_code.append("    endclass")
+        output_code.append("endpackage")
+        
+        # 写入文件
+        with open(output_path, 'w') as f:
             f.write('\n'.join(output_code))
         
     def generate_rtl(self, output_path: str):
@@ -169,12 +261,3 @@ class RegModelGenerator:
             
         # TODO: 实现RTL生成逻辑
         pass 
-
-    def generate_port_list(self) -> str:
-        """生成模块端口列表"""
-        reg_groups = self.reg_models.groupby('RegisterName')  # 确保这里是 DataFrame
-        ports = []
-        
-        # 生成端口列表逻辑...
-        
-        return ports.rstrip(',\n') 
